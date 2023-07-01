@@ -16,6 +16,38 @@ DefinitionBlock (
 {
     Scope (\_SB)
     {
+        Name(OSCO, 0)  // \_SB._OSC DWORD2 output
+        Name(OSCP, 0)  // \_SB._OSC CAPABILITIES
+        Method(_OSC,4,Serialized)
+        {
+            //
+            // Point to Caps DWORDs of the Arg3 buffer (CAPABILITIES)
+            //
+            CreateDwordField(Arg3, 4, CAP0)
+
+            //
+            // Check UUID
+            //
+            If(LEqual(Arg0,ToUUID("0811B06E-4A27-44F9-8D60-3CBBC22E7B48")))
+            {
+                //
+                // Check Revision
+                //
+                If(LEqual(Arg1,One))
+                {
+                    Store(CAP0, OSCP)
+                    If(And(CAP0,0x04)) // Check _PR3 Support(BIT2)
+                    {
+                        Store(0x04, OSCO)
+                        Or(CAP0, 0x10, CAP0) // Indicate APEI bit
+                        And(CAP0, 0x3B, CAP0) // Clear _PR3 capability
+                    }
+                }
+            }
+
+            Return(Arg3)
+        } // End _OSC
+
         //
         // PRM Test Device
         //
@@ -43,7 +75,6 @@ DefinitionBlock (
 
                 /* Create byte fields over the buffer */
                 CreateByteField (Local0, 0x0, PSTA)
-                CreateQWordField (Local0, 0x1, USTA)
                 CreateByteField (Local0, 0x9, CMD)
                 CreateField (Local0, 0x50, 0x80, GUID)
 
