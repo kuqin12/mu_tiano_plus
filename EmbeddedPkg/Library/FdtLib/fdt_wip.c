@@ -80,7 +80,7 @@ fdt_setprop_inplace_namelen_partial (
     return proplen;
   }
 
-  if (proplen < (len + idx)) {
+  if ((uint32_t)proplen < (len + idx)) {
     return -FDT_ERR_NOSPACE;
   }
 

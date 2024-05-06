@@ -262,7 +262,7 @@ _fdt_find_add_string (
   /* Add it */
   offset     = -strtabsize - len;
   struct_top = fdt_off_dt_struct (fdt) + fdt_size_dt_struct (fdt);
-  if (fdt_totalsize (fdt) + offset < struct_top) {
+  if (fdt_totalsize (fdt) + (unsigned int)offset < (unsigned int)struct_top) {
     return 0;             /* no more room :( */
   }
 

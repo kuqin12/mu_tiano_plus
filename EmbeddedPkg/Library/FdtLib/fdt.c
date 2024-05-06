@@ -90,7 +90,7 @@ fdt_offset_ptr (
 {
   unsigned  absoffset = offset + fdt_off_dt_struct (fdt);
 
-  if (  (absoffset < offset)
+  if (  (absoffset < (unsigned int)offset)
      || ((absoffset + len) < absoffset)
      || ((absoffset + len) > fdt_totalsize (fdt)))
   {
@@ -98,8 +98,8 @@ fdt_offset_ptr (
   }
 
   if (fdt_version (fdt) >= 0x11) {
-    if (  ((offset + len) < offset)
-       || ((offset + len) > fdt_size_dt_struct (fdt)))
+    if (  (((unsigned int)offset + len) < (unsigned int)offset)
+       || (((unsigned int)offset + len) > fdt_size_dt_struct (fdt)))
     {
       return NULL;
     }
@@ -321,7 +321,7 @@ fdt_move (
 {
   FDT_CHECK_HEADER (fdt);
 
-  if (fdt_totalsize (fdt) > bufsize) {
+  if (fdt_totalsize (fdt) > (unsigned int)bufsize) {
     return -FDT_ERR_NOSPACE;
   }
 

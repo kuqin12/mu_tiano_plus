@@ -39,3 +39,6 @@
 [LibraryClasses]
   BaseLib
   DebugLib
+
+[BuildOptions]
+  MSFT:*_*_*_CC_FLAGS = /wd4267 /wd4244 /wd4334 /wd4245
