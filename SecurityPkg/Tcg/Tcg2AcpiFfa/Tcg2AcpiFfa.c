@@ -1,9 +1,12 @@
 /** @file
   This driver implements TPM 2.0 definition block in ACPI table and
-  populates registered SMI callback functions for Tcg2 physical presence
-  and MemoryClear to handle the requests for ACPI method. It needs to be
-  used together with Tcg2 MM drivers to exchange information on registered
-  SwSmiValue and allocated NVS region address.
+  populates registered MMI callback functions for Tcg2 physical presence
+  to handle the requests for ACPI method. It needs to be used together with
+  Tcg2 MM drivers to handle the physical presence requests.
+
+  Note: The use of this driver is not to be conflicted with the TPM2 table
+  produced through the DynamicTablesPkg. Platform should only choose one of
+  them to use.
 
 Copyright (c) 2015 - 2018, Intel Corporation. All rights reserved.<BR>
 Copyright (c) Microsoft Corporation.
@@ -20,7 +23,6 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
 
 #include <Protocol/AcpiTable.h>
 #include <Protocol/Tcg2Protocol.h>
-#include <Protocol/MmCommunication.h>
 
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
@@ -47,9 +49,6 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
 #define TPM_HID_PNP_SIZE   8
 #define TPM_HID_ACPI_SIZE  9
 
-#define TPM_PRS_RESL           "RESL"
-#define TPM_PRS_RESS           "RESS"
-#define TPM_PRS_RES_NAME_SIZE  4
 //
 // Minimum PRS resource template size
 //  1 byte    for  BufferOp
@@ -134,256 +133,6 @@ UpdatePPVersion (
   }
 
   return EFI_NOT_FOUND;
-}
-
-/**
-  Patch interrupt resources returned by TPM _PRS. ResourceTemplate to patch is determined by input
-  interrupt buffer size. BufferSize, PkgLength and interrupt descriptor in ByteList need to be patched
-
-  @param[in, out] Table            The TPM item in ACPI table.
-  @param[in]      IrqBuffer        Input new IRQ buffer.
-  @param[in]      IrqBuffserSize   Input new IRQ buffer size.
-  @param[out]     IsShortFormPkgLength   If _PRS returns Short length Package(ACPI spec 20.2.4).
-
-  @return                          patch status.
-
-**/
-EFI_STATUS
-UpdatePossibleResource (
-  IN OUT  EFI_ACPI_DESCRIPTION_HEADER  *Table,
-  IN      UINT32                       *IrqBuffer,
-  IN      UINT32                       IrqBuffserSize,
-  OUT     BOOLEAN                      *IsShortFormPkgLength
-  )
-{
-  UINT8   *DataPtr;
-  UINT8   *DataEndPtr;
-  UINT32  NewPkgLength;
-  UINT32  OriginalPkgLength;
-
-  NewPkgLength      = 0;
-  OriginalPkgLength = 0;
-  DataEndPtr        = NULL;
-
-  //
-  // Follow ACPI spec
-  //           6.4.3   Extend Interrupt Descriptor.
-  //           19.3.3 ASL Resource Template
-  //           20      AML specification
-  // to patch TPM ACPI object _PRS returned ResourceTemplate() containing 2 resource descriptors and an auto appended End Tag
-  //
-  //  AML data is organized by following rule.
-  //  Code need to patch BufferSize and PkgLength and interrupt descriptor in ByteList
-  //
-  // =============  Buffer ====================
-  //           DefBuffer := BufferOp PkgLength BufferSize ByteList
-  //            BufferOp := 0x11
-  //
-  // ==============PkgLength==================
-  //          PkgLength := PkgLeadByte |
-  //                              <PkgLeadByte ByteData> |
-  //                              <PkgLeadByte ByteData ByteData> |
-  //                              <PkgLeadByte ByteData ByteData ByteData>
-  //
-  //       PkgLeadByte := <bit 7-6: ByteData count that follows (0-3)>
-  //                               <bit 5-4: Only used if PkgLength <= 63 >
-  //                               <bit 3-0: Least significant package length nybble>
-  //
-  // ==============BufferSize==================
-  //        BufferSize := Integer
-  //           Integer := ByteConst|WordConst|DwordConst....
-  //
-  //           ByteConst := BytePrefix ByteData
-  //
-  // ==============ByteList===================
-  //          ByteList := ByteData ByteList
-  //
-  // =========================================
-
-  //
-  // 1. Check TPM_PRS_RESS with PkgLength <=63 can hold the input interrupt number buffer for patching
-  //
-  for (DataPtr  = (UINT8 *)(Table + 1);
-       DataPtr < (UINT8 *)((UINT8 *)Table + Table->Length - (TPM_PRS_RES_NAME_SIZE + TPM_POS_RES_TEMPLATE_MIN_SIZE));
-       DataPtr += 1)
-  {
-    if (CompareMem (DataPtr, TPM_PRS_RESS, TPM_PRS_RES_NAME_SIZE) == 0) {
-      //
-      // Jump over object name & BufferOp
-      //
-      DataPtr += TPM_PRS_RES_NAME_SIZE + 1;
-
-      if ((*DataPtr & (BIT7|BIT6)) == 0) {
-        OriginalPkgLength = (UINT32)*DataPtr;
-        DataEndPtr        = DataPtr + OriginalPkgLength;
-
-        //
-        // Jump over PkgLength = PkgLeadByte only
-        //
-        NewPkgLength++;
-
-        //
-        // Jump over BufferSize
-        //
-        if (*(DataPtr + 1) == AML_BYTE_PREFIX) {
-          NewPkgLength += 2;
-        } else if (*(DataPtr + 1) == AML_WORD_PREFIX) {
-          NewPkgLength += 3;
-        } else if (*(DataPtr + 1) == AML_DWORD_PREFIX) {
-          NewPkgLength += 5;
-        } else {
-          ASSERT (FALSE);
-          return EFI_UNSUPPORTED;
-        }
-      } else {
-        ASSERT (FALSE);
-        return EFI_UNSUPPORTED;
-      }
-
-      //
-      // Include Memory32Fixed Descriptor (12 Bytes) + Interrupt Descriptor header(5 Bytes) + End Tag(2 Bytes)
-      //
-      NewPkgLength += 19 + IrqBuffserSize;
-      if (NewPkgLength > 63) {
-        break;
-      }
-
-      if (NewPkgLength > OriginalPkgLength) {
-        ASSERT (FALSE);
-        return EFI_INVALID_PARAMETER;
-      }
-
-      //
-      // 1.1 Patch PkgLength
-      //
-      *DataPtr = (UINT8)NewPkgLength;
-
-      //
-      // 1.2 Patch BufferSize = sizeof(Memory32Fixed Descriptor + Interrupt Descriptor + End Tag).
-      //      It is Little endian. So only patch lowest byte of BufferSize due to current interrupt number limit.
-      //
-      *(DataPtr + 2) = (UINT8)(IrqBuffserSize + 19);
-
-      //
-      // Notify _PRS to report short formed ResourceTemplate
-      //
-      *IsShortFormPkgLength = TRUE;
-
-      break;
-    }
-  }
-
-  //
-  // 2. Use TPM_PRS_RESL with PkgLength > 63 to hold longer input interrupt number buffer for patching
-  //
-  if (NewPkgLength > 63) {
-    NewPkgLength      = 0;
-    OriginalPkgLength = 0;
-    for (DataPtr  = (UINT8 *)(Table + 1);
-         DataPtr < (UINT8 *)((UINT8 *)Table + Table->Length - (TPM_PRS_RES_NAME_SIZE + TPM_POS_RES_TEMPLATE_MIN_SIZE));
-         DataPtr += 1)
-    {
-      if (CompareMem (DataPtr, TPM_PRS_RESL, TPM_PRS_RES_NAME_SIZE) == 0) {
-        //
-        // Jump over object name & BufferOp
-        //
-        DataPtr += TPM_PRS_RES_NAME_SIZE + 1;
-
-        if ((*DataPtr & (BIT7|BIT6)) != 0) {
-          OriginalPkgLength = (UINT32)(*(DataPtr + 1) << 4) + (*DataPtr & 0x0F);
-          DataEndPtr        = DataPtr + OriginalPkgLength;
-          //
-          // Jump over PkgLength = PkgLeadByte + ByteData length
-          //
-          NewPkgLength += 1 + ((*DataPtr & (BIT7|BIT6)) >> 6);
-
-          //
-          // Jump over BufferSize
-          //
-          if (*(DataPtr + NewPkgLength) == AML_BYTE_PREFIX) {
-            NewPkgLength += 2;
-          } else if (*(DataPtr + NewPkgLength) == AML_WORD_PREFIX) {
-            NewPkgLength += 3;
-          } else if (*(DataPtr + NewPkgLength) == AML_DWORD_PREFIX) {
-            NewPkgLength += 5;
-          } else {
-            ASSERT (FALSE);
-            return EFI_UNSUPPORTED;
-          }
-        } else {
-          ASSERT (FALSE);
-          return EFI_UNSUPPORTED;
-        }
-
-        //
-        // Include Memory32Fixed Descriptor (12 Bytes) + Interrupt Descriptor header(5 Bytes) + End Tag(2  Bytes)
-        //
-        NewPkgLength += 19 + IrqBuffserSize;
-
-        if (NewPkgLength > OriginalPkgLength) {
-          ASSERT (FALSE);
-          return EFI_INVALID_PARAMETER;
-        }
-
-        //
-        // 2.1 Patch PkgLength. Only patch PkgLeadByte and first ByteData
-        //
-        *DataPtr       = (UINT8)((*DataPtr) & 0xF0) | (NewPkgLength & 0x0F);
-        *(DataPtr + 1) = (UINT8)((NewPkgLength & 0xFF0) >> 4);
-
-        //
-        // 2.2 Patch BufferSize = sizeof(Memory32Fixed Descriptor + Interrupt Descriptor + End Tag).
-        //     It is Little endian. Only patch lowest byte of BufferSize due to current interrupt number limit.
-        //
-        *(DataPtr + 2 + ((*DataPtr & (BIT7|BIT6)) >> 6)) = (UINT8)(IrqBuffserSize + 19);
-
-        //
-        // Notify _PRS to report long formed ResourceTemplate
-        //
-        *IsShortFormPkgLength = FALSE;
-        break;
-      }
-    }
-  }
-
-  if (DataPtr >= (UINT8 *)((UINT8 *)Table + Table->Length - (TPM_PRS_RES_NAME_SIZE + TPM_POS_RES_TEMPLATE_MIN_SIZE))) {
-    return EFI_NOT_FOUND;
-  }
-
-  //
-  // 3. Move DataPtr to Interrupt descriptor header and patch interrupt descriptor.
-  //     5 bytes for interrupt descriptor header, 2 bytes for End Tag
-  //
-  DataPtr += NewPkgLength - (5 + IrqBuffserSize + 2);
-  //
-  //   3.1 Patch Length bit[7:0] of Interrupt descriptor patch interrupt descriptor
-  //
-  *(DataPtr + 1) = (UINT8)(2 + IrqBuffserSize);
-  //
-  //   3.2 Patch Interrupt Table Length
-  //
-  *(DataPtr + 4) = (UINT8)(IrqBuffserSize / sizeof (UINT32));
-  //
-  //   3.3 Copy patched InterruptNumBuffer
-  //
-  CopyMem (DataPtr + 5, IrqBuffer, IrqBuffserSize);
-
-  //
-  // 4. Jump over Interrupt descriptor and Patch END Tag, set Checksum field to 0
-  //
-  DataPtr       += 5 + IrqBuffserSize;
-  *DataPtr       = ACPI_END_TAG_DESCRIPTOR;
-  *(DataPtr + 1) = 0;
-
-  //
-  // 5. Jump over new ResourceTemplate. Stuff rest bytes to NOOP
-  //
-  DataPtr += 2;
-  if (DataPtr < DataEndPtr) {
-    SetMem (DataPtr, (UINTN)DataEndPtr - (UINTN)DataPtr, AML_NOOP_OP);
-  }
-
-  return EFI_SUCCESS;
 }
 
 /**
@@ -507,11 +256,6 @@ PublishAcpiTable (
   UINTN                        TableKey;
   EFI_ACPI_DESCRIPTION_HEADER  *Table;
   UINTN                        TableSize;
-  UINT32                       *PossibleIrqNumBuf;
-  UINT32                       PossibleIrqNumBufSize;
-  BOOLEAN                      IsShortFormPkgLength;
-
-  IsShortFormPkgLength = FALSE;
 
   Status = GetSectionFromFv (
              &gEfiCallerIdGuid,
@@ -528,21 +272,14 @@ PublishAcpiTable (
   // Otherwise, the PCR record would be different after TPM FW update
   // or the PCD configuration change.
   //
-  // MU_CHANGE [BEGIN]
-  // Allow a platform to drop TCG ACPI measurements until we have a chance to make them more
-  // consistent and functional.
-  if (!FixedPcdGetBool (PcdSkipTcgSmmAcpiMeasurements)) {
-    TpmMeasureAndLogData (
-      0,
-      EV_POST_CODE,
-      EV_POSTCODE_INFO_ACPI_DATA,
-      ACPI_DATA_LEN,
-      Table,
-      TableSize
-      );
-  }
-
-  // MU_CHANGE [END]
+  TpmMeasureAndLogData (
+    0,
+    EV_POST_CODE,
+    EV_POSTCODE_INFO_ACPI_DATA,
+    ACPI_DATA_LEN,
+    Table,
+    TableSize
+    );
 
   //
   // Update Table version before measuring it to PCR
@@ -564,28 +301,8 @@ PublishAcpiTable (
     return Status;
   }
 
-  if (PcdGet32 (PcdTpm2CurrentIrqNum) != 0) {
-    //
-    // Patch _PRS interrupt resource only when TPM interrupt is supported
-    //
-    PossibleIrqNumBuf     = (UINT32 *)PcdGetPtr (PcdTpm2PossibleIrqNumBuf);
-    PossibleIrqNumBufSize = (UINT32)PcdGetSize (PcdTpm2PossibleIrqNumBuf);
-
-    if ((PossibleIrqNumBufSize <= MAX_PRS_INT_BUF_SIZE) && ((PossibleIrqNumBufSize % sizeof (UINT32)) == 0)) {
-      Status = UpdatePossibleResource (Table, PossibleIrqNumBuf, PossibleIrqNumBufSize, &IsShortFormPkgLength);
-      DEBUG ((
-        DEBUG_INFO,
-        "UpdatePossibleResource status - %x. TPM2 service may not ready in OS.\n",
-        Status
-        ));
-    } else {
-      DEBUG ((
-        DEBUG_INFO,
-        "PcdTpm2PossibleIrqNumBuf size %x is not correct. TPM2 service may not ready in OS.\n",
-        PossibleIrqNumBufSize
-        ));
-    }
-  }
+  ASSERT (Table->OemTableId == SIGNATURE_64 ('T', 'p', 'm', '2', 'T', 'a', 'b', 'l'));
+  CopyMem (Table->OemId, PcdGetPtr (PcdAcpiDefaultOemId), sizeof (Table->OemId));
 
   //
   // Publish the TPM ACPI table. Table is re-checksummed.
@@ -627,18 +344,20 @@ PublishTpm2 (
 
   STATIC_ASSERT ((FixedPcdGet64 (PcdTpmMaxAddress) - FixedPcdGet64 (PcdTpmBaseAddress)) == (FixedPcdGet32 (PcdTpmCrbRegionSize) - 1), "TPM CRB region size mismatch");
 
-  // Allow a platform to drop TCG ACPI measurements until we have a chance to make them more
-  // consistent and functional.
-  if (!FixedPcdGetBool (PcdSkipTcgSmmAcpiMeasurements)) {
-    TpmMeasureAndLogData (
-      0,
-      EV_POST_CODE,
-      EV_POSTCODE_INFO_ACPI_DATA,
-      ACPI_DATA_LEN,
-      &mTpm2AcpiTemplate,
-      mTpm2AcpiTemplate.Header.Length
-      );
-  }
+  //
+  // Measure to PCR[0] with event EV_POST_CODE ACPI DATA.
+  // The measurement has to be done before any update.
+  // Otherwise, the PCR record would be different after event log update
+  // or the PCD configuration change.
+  //
+  TpmMeasureAndLogData (
+    0,
+    EV_POST_CODE,
+    EV_POSTCODE_INFO_ACPI_DATA,
+    ACPI_DATA_LEN,
+    &mTpm2AcpiTemplate,
+    mTpm2AcpiTemplate.Header.Length
+    );
 
   mTpm2AcpiTemplate.Header.Revision = PcdGet8 (PcdTpm2AcpiTableRev);
   DEBUG ((DEBUG_INFO, "Tpm2 ACPI table revision is %d\n", mTpm2AcpiTemplate.Header.Revision));

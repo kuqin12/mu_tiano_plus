@@ -63,10 +63,7 @@
   gEfiSecurityPkgTokenSpaceGuid.PcdTpm2AcpiTableRev                 ## CONSUMES
   gEfiSecurityPkgTokenSpaceGuid.PcdTcgPhysicalPresenceInterfaceVer  ## CONSUMES
   gEfiSecurityPkgTokenSpaceGuid.PcdTpmPlatformClass                 ## SOMETIMES_CONSUMES
-  gEfiSecurityPkgTokenSpaceGuid.PcdTpm2CurrentIrqNum                ## CONSUMES
-  gEfiSecurityPkgTokenSpaceGuid.PcdTpm2PossibleIrqNumBuf            ## CONSUMES
   gEfiSecurityPkgTokenSpaceGuid.PcdActiveTpmInterfaceType           ## CONSUMES
-  gEfiSecurityPkgTokenSpaceGuid.PcdSkipTcgSmmAcpiMeasurements       ## CONSUMES
   gEfiSecurityPkgTokenSpaceGuid.PcdTpm2AcpiTableLaml                ## CONSUMES
   gEfiSecurityPkgTokenSpaceGuid.PcdTpm2AcpiTableLasa                ## CONSUMES
   gEfiSecurityPkgTokenSpaceGuid.PcdTpmServiceFfaPartitionId         ## CONSUMES
