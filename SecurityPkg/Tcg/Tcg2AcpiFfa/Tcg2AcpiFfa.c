@@ -364,8 +364,8 @@ PublishTpm2 (
 
   if (mTpm2AcpiTemplate.Header.Revision < EFI_TPM2_ACPI_TABLE_REVISION_5) {
     DEBUG ((DEBUG_ERROR, "%a The minimum revision supported for TPM over FFA table is 5, not %d.\n", __func__, mTpm2AcpiTemplate.Header.Revision));
-    // ASSERT (FALSE);
-    // return EFI_UNSUPPORTED;
+    ASSERT (FALSE);
+    return EFI_UNSUPPORTED;
   }
 
   mTpm2AcpiTemplate.Flags = (mTpm2AcpiTemplate.Flags & 0xFFFF0000) | PcdGet8 (PcdTpmPlatformClass);
@@ -403,9 +403,6 @@ PublishTpm2 (
   }
 
   DEBUG ((DEBUG_INFO, "Tpm2 ACPI table size %d\n", mTpm2AcpiTemplate.Header.Length));
-
-  DEBUG ((DEBUG_INFO, "Tpm2 ACPI table laml %x\n", mTpm2AcpiTemplate.Laml));
-  DEBUG ((DEBUG_INFO, "Tpm2 ACPI table lasa %x\n", mTpm2AcpiTemplate.Lasa));
 
   CopyMem (mTpm2AcpiTemplate.Header.OemId, PcdGetPtr (PcdAcpiDefaultOemId), sizeof (mTpm2AcpiTemplate.Header.OemId));
   OemTableId = PcdGet64 (PcdAcpiDefaultOemTableId);
